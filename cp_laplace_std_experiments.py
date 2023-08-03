@@ -51,7 +51,7 @@ def svi_runner(datasets, num_runs):
                 if len(arr) < 2:
                     return False
                 # check if last values have changed by 1% or less
-                return (max(arr) - min(arr)) / max(arr) < 0.01
+                return (max(arr) - min(arr)) / max(arr) < 0.001
 
             def model(data):
                 # define the hyperparameters that control the Beta prior

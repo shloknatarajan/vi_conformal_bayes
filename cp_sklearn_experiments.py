@@ -10,7 +10,6 @@ import pyro
 import numpy as np
 import copy
 import time
-import snakeviz
 from pyro.optim import Adam
 from pyro.infer import SVI, Trace_ELBO
 import pyro.distributions as dist
@@ -48,12 +47,19 @@ Y = (Y - Y.mean()) / Y.std()
 X = X / np.linalg.norm(X)
 
 ## Set up X and Y Train
-X_train = copy.deepcopy(X)
-Y_train = copy.deepcopy(Y[:len(Y) - 1])
-X_train = [torch.tensor(member) for member in X_train]
-Y_train = [torch.tensor(member) for member in Y_train]
-dim = len(X[0])
+def train_data_setup_svi(X, Y):
+    X_train = copy.deepcopy(X)
+    Y_train = copy.deepcopy(Y[:len(Y) - 1])
+    X_train = [torch.tensor(member) for member in X_train]
+    Y_train = [torch.tensor(member) for member in Y_train]
+    dim = len(X[0])
+    return X_train, Y_train, dim
 
+def train_data_setup_sklearn(X, Y):
+    X_train = copy.deepcopy(X)
+    Y_train = copy.deepcopy(Y[:len(Y) - 1])
+    dim = len(X[0])
+    return X_train, Y_train, dim
 
 # Model and Guide Setup
 global prev_mu_q
@@ -80,7 +86,7 @@ def guide(data):
     # sample latent_fairness from the distribution Beta(alpha_q, beta_q)
     pyro.sample("latent_fairness", dist.MultivariateNormal(mu_q, std0))
 
-def train_svi(D_hat, n_steps):
+def train_svi(d_hat, n_steps):
     # setup the optimizer
     adam_params = {"lr": 0.005, "betas": (0.90, 0.999)}
     optimizer = Adam(adam_params)
@@ -97,46 +103,48 @@ def train_svi(D_hat, n_steps):
     mu_q = pyro.param("mu_q")
     return mu_q
 
-
-# Run SVI on the Data
-y_hat = max(Y_train)
-y_bottom = min(Y_train)
-print(y_hat)
-print(y_bottom)
-conformal_set = []
-decrease_size = 0.1
-start = time.time()
-while y_hat >= y_bottom:
-    pyro.clear_param_store()
-    # Create D_hat
-    D_hat = list(zip(X_train[:-1], Y_train))
-    D_hat.append((X_train[-1], y_hat))
-    
-    # Train SVI
-    mu_q = train_svi(D_hat, 4)
-    prev_mu_q = mu_q
-    
-    # Calculate rank of y_hat
-    rank = [(abs(sum(D_hat[i][0] * mu_q) - D_hat[i][1]).detach().numpy()) for i in range(len(D_hat))]
-    y_hat_rank = rank[-1]
-    
-    # Add to conformal set if in not in bottom 10 percent of probabilities
-    if np.count_nonzero(y_hat_rank > rank) / len(rank) < 0.9:
-        conformal_set.append(copy.deepcopy(y_hat))
-        print(f"{y_hat} Added")
-    else:
-        print(f"{y_hat} Not added")
+def run_svi(decrease_size=0.1, threshold=0.9):
+    # Run SVI on the Data
+    y_hat = max(Y_train)
+    y_bottom = min(Y_train)
+    print(y_hat)
+    print(y_bottom)
+    conformal_set = []
+    start = time.time()
+    while y_hat >= y_bottom:
+        pyro.clear_param_store()
+        # Create D_hat
+        D_hat = list(zip(X_train[:-1], Y_train))
+        D_hat.append((X_train[-1], y_hat))
         
-    y_hat -= decrease_size
-conformal_set = [min(conformal_set), max(conformal_set)]
-end = time.time()
+        # Train SVI
+        mu_q = train_svi(D_hat, 4)
+        prev_mu_q = mu_q
+        
+        # Calculate rank of y_hat
+        rank = [(abs(sum(D_hat[i][0] * mu_q) - D_hat[i][1]).detach().numpy()) for i in range(len(D_hat))]
+        y_hat_rank = rank[-1]
+        
+        # Add to conformal set if in not in bottom 10 percent of probabilities
+        if np.count_nonzero(y_hat_rank > rank) / len(rank) < threshold:
+            conformal_set.append(copy.deepcopy(y_hat))
+            print(f"{y_hat} Added")
+        else:
+            print(f"{y_hat} Not added")
+            
+        y_hat -= decrease_size
+    conformal_set = [min(conformal_set), max(conformal_set)]
+    end = time.time()
 
-print(f"Conformal Set: [{float(conformal_set[0])}, {float(conformal_set[1])}]")
-print(f"Length: {float(conformal_set[1] - conformal_set[0])}")
-print(f"Y[-1]: {Y[-1]}")
-if Y[-1] >= conformal_set[0] and Y[-1] <= conformal_set[1]:
-    print("Y[-1] is covered")
-else:
-    print("Y[-1] is Not covered")
-print(f"Elapsed Time: {end - start}")
+    print(f"Conformal Set: [{float(conformal_set[0])}, {float(conformal_set[1])}]")
+    print(f"Length: {float(conformal_set[1] - conformal_set[0])}")
+    print(f"Y[-1]: {Y[-1]}")
+    if Y[-1] >= conformal_set[0] and Y[-1] <= conformal_set[1]:
+        print("Y[-1] is covered")
+    else:
+        print("Y[-1] is Not covered")
+    print(f"Elapsed Time: {end - start}")
+
+
+def run_sklearn()
 

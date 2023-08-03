@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# coding: utf-8
-
 import math
 import os
 import torch
@@ -17,125 +14,147 @@ from pyro.infer import SVI, Trace_ELBO
 import pyro.distributions as dist
 import random
 assert pyro.__version__.startswith('1.8.4')
-
-# clear the param store in case we're in a REPL
 pyro.clear_param_store()
+# clear the param store in case we're in a REPL
 
-def svi_runner(dataset_num, num_runs):
+
+def pickle_data(variables, file_name, folder_name):
+    # Save to a file
+    file_name_pickled = folder_name + "/" + file_name + ".pkl"
+    with open(file_name_pickled, "wb") as outfile:
+        pickle.dump(variables, outfile)
+        
+datasets = [0, 1, 2, 3, 4, 5]
+runs = 5
+
+laplace_results = {
+    'coverage': np.zeros((len(datasets), runs)),
+    'length': np.zeros((len(datasets), runs)),
+    'time': np.zeros((len(datasets), runs))
+}
+
+
+def svi_runner(datasets, num_runs):
     # # Load Datasets
-    for run in num_runs:
+    for dataset_num in datasets:
         infile = open(f'random_datasets/dataset_{dataset_num}.pkl', 'rb')
-
         variables = pickle.load(infile)
         X_train = variables['x_train']
         Y_train = variables['y_train']
         last_y = variables['last_y']
         dim = variables['dim']
         infile.close()
-        def is_converged(arr):
-            if len(arr) < 2:
-                return False
-            # check if last values have changed by 1% or less
-            return (max(arr) - min(arr)) / max(arr) < 0.01
-
-        def model(data):
-            # define the hyperparameters that control the Beta prior
-            mu0 = torch.zeros(dim, dtype=torch.float64)
-            bmean = torch.ones(dim, dtype=torch.float64)
-            bscale = torch.ones(dim, dtype=torch.float64)
-            b = pyro.sample("b", dist.Gamma(bmean, bscale).to_event(1))
-            # sample f from the Beta prior
-            beta = pyro.sample("beta", dist.Laplace(mu0, b).to_event(1))
-            std_scale = 1
-            std = pyro.sample("sigma", dist.HalfNormal(std_scale))
-            # loop over the observed data
-            # subset = random.sample(data, int(len(data) / dim))
-            # for i in range(len(subset)):
-            # data goes list tuple tensor
-                
-            with pyro.plate("data", len(data), subsample_size=100) as ind:
-                data = [data[x] for x in ind]
-                for i in range(len(data)):
-                    sampler = dist.Normal(beta.dot(data[i][0]).item(), std)
-                    pyro.sample("obs_{}".format(i), sampler.to_event(0), obs=data[i][1])
-
-        # Global guide
-        guide = pyro.infer.autoguide.AutoLaplaceApproximation(poutine.block(model, expose=['b', 'beta', 'sigma']))
-
-        def train_SVI(D_hat, n_steps, warm_dict = None):    
-            losses = []
-            # setup the optimizer
-            adam_params = {"lr": 0.005, "betas": (0.90, 0.999)}
-            optimizer = Adam(adam_params)
-
-            # setup the inference algorithm
-            guide = pyro.infer.autoguide.AutoLaplaceApproximation(poutine.block(model, expose=['b', 'beta', 'sigma']))
-            if warm_dict is not None:
-                guide = pyro.infer.autoguide.AutoLaplaceApproximation(poutine.block(model, expose=['b', 'beta', 'sigma']), init_loc_fn=init_to_value(values=warm_dict))
-            svi = SVI(model, guide, optimizer, loss=Trace_ELBO())
-            # do gradient steps
-            for step in range(n_steps):
-                loss = svi.step(D_hat)
-                losses.append(loss)
-                if is_converged(losses[-1:-6:-1]):
-                    print(f"Converged on step {step} -- breaking")
-                    break
-                if loss < 1e-5:
-                    print(f"Early Loss Stopping on step {step}")
-                    break
-            beta = guide(D_hat)['beta']
-            print(f"Ended on step {step}")
-            return beta, losses
-
-        rank_proportions = []
-        y_hat = max(Y_train)
-        y_bottom = min(Y_train)
-        conformal_set = []
-        decrease_size = 0.01
-        start = time.time()
-        all_losses = []
-        while y_hat >= y_bottom:
+        for run in range(num_runs):
             pyro.clear_param_store()
-            # Create D_hat
-            D_hat = list(zip(X_train[:-1], Y_train))
-            D_hat.append((X_train[-1], y_hat))
             
-            # Train SVI
-            warm_dict = guide(D_hat)
-            if warm_dict is not None:
-                beta, losses = train_SVI(D_hat, 100, warm_dict)
+            def is_converged(arr):
+                if len(arr) < 2:
+                    return False
+                # check if last values have changed by 1% or less
+                return (max(arr) - min(arr)) / max(arr) < 0.01
+
+            def model(data):
+                # define the hyperparameters that control the Beta prior
+                mu0 = torch.zeros(dim, dtype=torch.float64)
+                bmean = torch.ones(dim, dtype=torch.float64)
+                bscale = torch.ones(dim, dtype=torch.float64)
+                b = pyro.sample("b", dist.Gamma(bmean, bscale).to_event(1))
+                # sample f from the Beta prior
+                beta = pyro.sample("beta", dist.Laplace(mu0, b).to_event(1))
+                std_scale = 1
+                std = pyro.sample("sigma", dist.HalfNormal(std_scale))
+                # loop over the observed data
+                # subset = random.sample(data, int(len(data) / dim))
+                # for i in range(len(subset)):
+                # data goes list tuple tensor
+                    
+                with pyro.plate("data", len(data), subsample_size=100) as ind:
+                    data = [data[x] for x in ind]
+                    for i in range(len(data)):
+                        sampler = dist.Normal(beta.dot(data[i][0]).item(), std)
+                        pyro.sample("obs_{}".format(i), sampler.to_event(0), obs=data[i][1])
+
+            # Global guide
+            guide = pyro.infer.autoguide.AutoLaplaceApproximation(poutine.block(model, expose=['b', 'beta', 'sigma']))
+
+            def train_SVI(D_hat, n_steps, warm_dict = None):    
+                losses = []
+                # setup the optimizer
+                adam_params = {"lr": 0.005, "betas": (0.90, 0.999)}
+                optimizer = Adam(adam_params)
+
+                # setup the inference algorithm
+                guide = pyro.infer.autoguide.AutoLaplaceApproximation(poutine.block(model, expose=['b', 'beta', 'sigma']))
+                if warm_dict is not None:
+                    guide = pyro.infer.autoguide.AutoLaplaceApproximation(poutine.block(model, expose=['b', 'beta', 'sigma']), init_loc_fn=init_to_value(values=warm_dict))
+                svi = SVI(model, guide, optimizer, loss=Trace_ELBO())
+                # do gradient steps
+                for step in range(n_steps):
+                    loss = svi.step(D_hat)
+                    losses.append(loss)
+                    if is_converged(losses[-1:-6:-1]):
+                        print(f"Converged on step {step} -- breaking")
+                        break
+                    if loss < 1e-5:
+                        print(f"Early Loss Stopping on step {step}")
+                        break
+                beta = guide(D_hat)['beta']
+                print(f"Ended on step {step}")
+                return beta, losses
+
+            rank_proportions = []
+            y_hat = max(Y_train)
+            y_bottom = min(Y_train)
+            conformal_set = []
+            decrease_size = 0.01
+            start = time.time()
+            all_losses = []
+            while y_hat >= y_bottom:
+                pyro.clear_param_store()
+                # Create D_hat
+                D_hat = list(zip(X_train[:-1], Y_train))
+                D_hat.append((X_train[-1], y_hat))
+                
+                # Train SVI
+                warm_dict = guide(D_hat)
+                if warm_dict is not None:
+                    beta, losses = train_SVI(D_hat, 100, warm_dict)
+                else:
+                    print("Warm dict was none")
+                    beta, losses = train_SVI(D_hat, 100)
+                all_losses.append(losses)
+                
+                
+                # Calculate rank of y_hat
+                rank = [(abs(sum(D_hat[i][0] * beta) - D_hat[i][1]).detach().numpy()) for i in range(len(D_hat))]
+                y_hat_rank = rank[-1]
+                
+                # Add to conformal set if in not in bottom 10 percent of probabilities
+                current_rank_proportion = np.count_nonzero(y_hat_rank > rank) / len(rank)
+                rank_proportions.append(current_rank_proportion)
+                if current_rank_proportion < 0.9:
+                    conformal_set.append(copy.deepcopy(y_hat))
+                    print(f"{y_hat} Added")
+                else:
+                    print(f"{y_hat} Not added")
+                y_hat -= decrease_size
+            conformal_set = [min(conformal_set), max(conformal_set)]
+            end = time.time()
+            conformal_set = [min(conformal_set), max(conformal_set)]
+            length = conformal_set[1] - conformal_set[0]
+            coverage = last_y >= conformal_set[0] and last_y <= conformal_set[1]
+            run_time = end - start
+            laplace_results["coverage"][dataset_num][run] = coverage
+            laplace_results["length"][dataset_num][run] = length
+            laplace_results["time"][dataset_num][run] = run_time
+            print(f"Conformal Set: [{float(conformal_set[0])}, {float(conformal_set[1])}]")
+            print(f"Length: {float(conformal_set[1] - conformal_set[0])}")
+            print(f"Y[-1]: {last_y}")
+            if last_y >= conformal_set[0] and last_y <= conformal_set[1]:
+                print("Y[-1] is covered")
             else:
-                print("Warm dict was none")
-                beta, losses = train_SVI(D_hat, 100)
-            all_losses.append(losses)
-            
-            
-            # Calculate rank of y_hat
-            rank = [(abs(sum(D_hat[i][0] * beta) - D_hat[i][1]).detach().numpy()) for i in range(len(D_hat))]
-            y_hat_rank = rank[-1]
-            
-            # Add to conformal set if in not in bottom 10 percent of probabilities
-            current_rank_proportion = np.count_nonzero(y_hat_rank > rank) / len(rank)
-            rank_proportions.append(current_rank_proportion)
-            if current_rank_proportion < 0.9:
-                conformal_set.append(copy.deepcopy(y_hat))
-                print(f"{y_hat} Added")
-            else:
-                print(f"{y_hat} Not added")
-            y_hat -= decrease_size
-        conformal_set = [min(conformal_set), max(conformal_set)]
-        end = time.time()
+                print("Y[-1] is Not covered")
+            print(f"Elapsed Time: {end - start}")
 
-        print(f"Conformal Set: [{float(conformal_set[0])}, {float(conformal_set[1])}]")
-        print(f"Length: {float(conformal_set[1] - conformal_set[0])}")
-        print(f"Y[-1]: {last_y}")
-        if last_y >= conformal_set[0] and last_y <= conformal_set[1]:
-            print(f"Y[-1] is covered")
-        else:
-            print("Y[-1] is Not covered")
-        print(f"Elapsed Time: {end - start}")
-
-
-        import matplotlib.pyplot as plt
-        plt.scatter(range(len(rank_proportions)), rank_proportions)
-        plt.show()
+svi_runner(datasets, runs)
+pickle_data(laplace_results, "test_5by5", "run_saves")
